@@ -1,0 +1,359 @@
+<section class="part s9">
+<div class="part-head">
+  <div class="num">09</div>
+  <div class="kicker">Partie 9</div>
+  <h1 data-toc="Partie 9 · Réseaux convolutifs et apprentissage par transfert" data-cls="s9" data-find="9.1 Représentation numérique">Réseaux convolutifs et apprentissage par transfert</h1>
+  <div class="intro">Les réseaux de neurones convolutifs (CNN) exploitent la structure spatiale des images : connexions locales, poids partagés et hiérarchie de représentations. L'apprentissage par transfert permet ensuite de réutiliser un CNN entraîné sur des millions d'images pour résoudre une nouvelle tâche avec peu de données.</div>
+</div>
+<div class="part-toc">
+  <span><b>9.1</b>Représentation numérique des images</span>
+  <span><b>9.2</b>Convolution, filtres et partage des poids</span>
+  <span><b>9.3</b>Canaux, stride, padding et pooling</span>
+  <span><b>9.4</b>Construction et entraînement d'un CNN</span>
+  <span><b>9.5</b>Comparaison entre MLP et CNN</span>
+  <span><b>9.6</b>Utilisation d'un modèle préentraîné</span>
+  <span><b>9.7</b>Extraction de représentations et fine-tuning</span>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s9-1"><span class="n">9.1</span> Représentation numérique des images</h2>
+
+<p>Pour un ordinateur, une image n'est qu'un <strong>tableau de nombres</strong>. Chaque case de ce tableau est un <em>pixel</em> (<em>picture element</em>) dont la valeur code une intensité lumineuse.</p>
+
+<div class="box def"><span class="t">Définition</span>
+<p>Une image numérique de hauteur $H$, de largeur $W$ et à $C$ canaux est un <strong>tenseur</strong> $X \in \R^{C\times H\times W}$. L'élément $X_{c,i,j}$ est l'intensité du canal $c$ au pixel situé à la ligne $i$ et à la colonne $j$.</p>
+</div>
+
+<ul>
+<li><strong>Niveaux de gris</strong> : un seul canal ($C=1$). Valeur entière sur 8 bits, de $0$ (noir) à $255$ (blanc).</li>
+<li><strong>Couleur RVB (RGB)</strong> : trois canaux ($C=3$), rouge, vert et bleu. Chaque pixel est un triplet $(r,g,b)\in\{0,\dots,255\}^3$, soit $256^3\approx 16{,}7$ millions de couleurs.</li>
+<li><strong>Autres cas</strong> : canal alpha (transparence, $C=4$), images médicales 3D ($C\times D\times H\times W$), images multispectrales satellite ($C$ = 10 à 200 bandes), vidéos (une dimension temporelle en plus).</li>
+</ul>
+
+<figure>{{fig:pixels}}<figcaption><b>Figure 9.1</b> — Une image est une grille de pixels ; en couleur, on empile trois grilles (canaux R, G, B).</figcaption></figure>
+
+<h3>Conventions de dimensions</h3>
+<p>Un lot (<em>batch</em>) d'images forme un tenseur 4D. <strong>PyTorch</strong> utilise le format <code>(N, C, H, W)</code> (« channels first ») ; PIL, OpenCV, Matplotlib et TensorFlow utilisent <code>(H, W, C)</code> (« channels last »). Une conversion est donc souvent nécessaire : <code>x.permute(2, 0, 1)</code>. Attention : OpenCV lit les images en <strong>BGR</strong> et non en RGB.</p>
+
+<h3>Prétraitement standard</h3>
+<ol>
+<li><strong>Redimensionnement</strong> à une taille fixe (ex. $224\times224$), car un lot doit contenir des tenseurs de même forme.</li>
+<li><strong>Mise à l'échelle</strong> vers $[0,1]$ : $x \leftarrow x/255$ (fait automatiquement par <code>transforms.ToTensor()</code>).</li>
+<li><strong>Standardisation par canal</strong> avec la moyenne $\mu_c$ et l'écart-type $\sigma_c$ calculés sur le jeu d'entraînement :
+$$\tilde{x}_{c,i,j} = \frac{x_{c,i,j}-\mu_c}{\sigma_c}, \qquad \text{ImageNet : } \mu = (0{,}485;\,0{,}456;\,0{,}406),\ \sigma = (0{,}229;\,0{,}224;\,0{,}225).$$</li>
+</ol>
+
+<div class="box key"><span class="t">Pourquoi les images posent problème à un MLP</span>
+<p>Une image $224\times224\times3$ contient $150\,528$ valeurs. Une couche dense vers $1\,000$ neurones nécessiterait déjà $\approx 150$ millions de poids. De plus, aplatir l'image détruit la notion de voisinage : deux pixels voisins deviennent deux entrées sans relation particulière. Les CNN résolvent ces deux problèmes.</p>
+</div>
+
+<pre class="py">
+from PIL import Image
+import torchvision.transforms as T
+
+img = Image.open("chat.jpg").convert("RGB")    # (H, W, 3), valeurs 0..255
+transform = T.Compose([
+    T.Resize(256), T.CenterCrop(224),          # taille fixe
+    T.ToTensor(),                               # -> (3, 224, 224), valeurs dans [0, 1]
+    T.Normalize(mean=[0.485, 0.456, 0.406],     # standardisation par canal
+                std=[0.229, 0.224, 0.225]),
+])
+x = transform(img).unsqueeze(0)                 # ajout de la dimension batch -> (1, 3, 224, 224)
+</pre>
+
+<!-- ===================================================== -->
+<h2 id="s9-2"><span class="n">9.2</span> Convolution, filtres et partage des poids</h2>
+
+<p>La <strong>convolution</strong> consiste à faire glisser un petit tableau de poids, le <strong>filtre</strong> (ou <em>noyau</em>, <em>kernel</em>), sur toute l'image. À chaque position, on calcule le produit élément par élément entre le filtre et la zone couverte, puis on somme : le résultat est un nombre qui mesure à quel point la zone « ressemble » au motif du filtre.</p>
+
+<div class="box math"><span class="t">Formule — convolution 2D (couche Conv2d)</span>
+<p>Pour une entrée $X\in\R^{C_{in}\times H\times W}$, un filtre $W^{(k)}\in\R^{C_{in}\times K\times K}$ et un biais $b_k$, la sortie (carte de caractéristiques $k$) vaut :</p>
+$$Y_{k}[i,j] \;=\; b_k + \sum_{c=1}^{C_{in}}\;\sum_{u=0}^{K-1}\;\sum_{v=0}^{K-1} W^{(k)}_{c}[u,v]\; X_{c}[\,i\cdot S+u,\; j\cdot S+v\,]$$
+<p class="small">où $S$ est le pas (<em>stride</em>). En toute rigueur, il s'agit d'une <em>corrélation croisée</em> (le filtre n'est pas retourné) ; comme les poids sont appris, la distinction n'a aucune importance pratique.</p>
+</div>
+
+<figure>{{fig:conv}}<figcaption><b>Figure 9.2</b> — Convolution d'une entrée 5×5 par un filtre de Sobel 3×3 (stride 1, sans padding). La fenêtre encadrée produit la case Y[1,2].</figcaption></figure>
+
+<h3>Les filtres sont des détecteurs de motifs</h3>
+<p>Le filtre de Sobel de la figure répond fortement à une <strong>transition verticale</strong> d'intensité (bord vertical). En traitement d'image classique, ces filtres sont conçus à la main (Sobel, Prewitt, flou gaussien, Laplacien). Dans un CNN, <strong>les valeurs des filtres sont des paramètres appris</strong> par rétropropagation : le réseau découvre lui-même les motifs utiles à la tâche. Une couche possède généralement des dizaines à des centaines de filtres, chacun produisant sa propre carte de caractéristiques (<em>feature map</em>).</p>
+
+<h3>Deux principes fondamentaux</h3>
+<div class="cols">
+<div class="box def"><span class="t">Connectivité locale</span>
+<p>Chaque neurone de sortie ne regarde qu'une petite zone $K\times K$ de l'entrée : son <strong>champ réceptif</strong>. Les pixels proches étant fortement corrélés, l'information pertinente est d'abord locale (bords, coins, textures).</p>
+</div>
+<div class="box def"><span class="t">Partage des poids</span>
+<p>Le <strong>même filtre</strong> est appliqué à toutes les positions. Un détecteur de bord utile en haut à gauche l'est aussi en bas à droite. Le nombre de paramètres ne dépend donc <strong>pas</strong> de la taille de l'image.</p>
+</div>
+</div>
+
+<p>Conséquence mathématique : la convolution est <strong>équivariante par translation</strong>. Si l'on décale l'entrée, la carte de sortie est décalée de la même façon : $\operatorname{Conv}(\tau_\delta X) = \tau_\delta \operatorname{Conv}(X)$. Associée au pooling, elle confère une <strong>invariance approximative</strong> aux petites translations : un chat reste un chat, où qu'il soit dans l'image.</p>
+
+<div class="box math"><span class="t">Nombre de paramètres d'une couche convolutive</span>
+$$\#\text{params} = \underbrace{C_{out}\times C_{in}\times K\times K}_{\text{poids}} \;+\; \underbrace{C_{out}}_{\text{biais}}$$
+<p>Exemple : <code>Conv2d(3, 64, kernel_size=3)</code> → $64\times3\times3\times3+64 = 1\,792$ paramètres, quelle que soit la résolution de l'image. Comparez aux $\approx 150$ millions de la couche dense évoquée en 9.1.</p>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s9-3"><span class="n">9.3</span> Canaux, stride, padding et pooling</h2>
+
+<h3>Canaux d'entrée et de sortie</h3>
+<p>Un filtre traverse <strong>toute la profondeur</strong> de l'entrée : pour une entrée à $C_{in}$ canaux, chaque filtre a la forme $C_{in}\times K\times K$ et combine l'information de tous les canaux. Une couche avec $C_{out}$ filtres produit $C_{out}$ cartes, qui deviennent les canaux de la couche suivante. Le tenseur de poids d'une couche a donc la forme <code>(C_out, C_in, K, K)</code>. Au fil du réseau, les canaux ne représentent plus des couleurs mais des <strong>caractéristiques abstraites</strong> (« présence d'un œil », « texture de fourrure »…).</p>
+
+<h3>Stride (pas) et padding (remplissage)</h3>
+<ul>
+<li><strong>Stride $S$</strong> : déplacement du filtre entre deux positions. $S=2$ divise (environ) la résolution par 2 : c'est un sous-échantillonnage appris.</li>
+<li><strong>Padding $P$</strong> : ajout de $P$ rangées de zéros autour de l'entrée. Il évite que l'image rétrécisse à chaque couche et permet aux pixels du bord d'être traités autant que ceux du centre. Le padding <em>« same »</em> ($P=\lfloor K/2\rfloor$ avec $S=1$) conserve la taille ; le padding <em>« valid »</em> ($P=0$) n'en ajoute pas.</li>
+</ul>
+
+<div class="box math"><span class="t">Formule — taille de la sortie</span>
+$$H_{out} = \left\lfloor \frac{H_{in} + 2P - K}{S} \right\rfloor + 1 \qquad\text{(idem pour } W_{out}\text{)}$$
+<p>Exemple (couche d'entrée de ResNet) : $H_{in}=224$, $K=7$, $S=2$, $P=3$ → $\lfloor(224+6-7)/2\rfloor+1 = 112$.</p>
+</div>
+
+<figure>{{fig:padstride}}<figcaption><b>Figure 9.3</b> — À gauche : padding de 1 et stride de 2 (trois positions successives du filtre). À droite : max pooling et average pooling 2×2.</figcaption></figure>
+
+<h3>Pooling (sous-échantillonnage)</h3>
+<p>Le pooling résume chaque fenêtre (souvent $2\times2$, stride 2) par une statistique, <strong>canal par canal</strong>, sans aucun paramètre appris :</p>
+<ul>
+<li><strong>Max pooling</strong> : $Y[i,j]=\max_{(u,v)\in\text{fenêtre}} X[2i+u,\,2j+v]$. Conserve la réponse la plus forte (« le motif est-il présent dans la zone ? »).</li>
+<li><strong>Average pooling</strong> : moyenne de la fenêtre ; plus lisse.</li>
+<li><strong>Global Average Pooling (GAP)</strong> : moyenne de chaque carte entière, $\R^{C\times H\times W}\to\R^{C}$. Remplace l'aplatissement + grandes couches denses dans les architectures modernes (moins de paramètres, indépendant de la résolution d'entrée).</li>
+</ul>
+<p>Le pooling réduit le coût de calcul (division par 4 du nombre de positions), augmente le champ réceptif des couches suivantes et apporte une robustesse aux petites déformations.</p>
+
+<h3>Champ réceptif et convolution 1×1</h3>
+<p>En empilant les couches, chaque neurone « voit » une zone de plus en plus grande de l'image d'origine. Avec $j_{l}=\prod_{i\le l} S_i$ le pas cumulé :</p>
+$$r_l = r_{l-1} + (K_l - 1)\, j_{l-1}, \qquad r_0 = 1,\; j_0 = 1.$$
+<p>Deux convolutions $3\times3$ empilées ont un champ réceptif $5\times5$ et trois en ont un de $7\times7$, avec moins de paramètres ($3\times 9C^2 = 27C^2$ contre $49C^2$) et davantage de non-linéarités : c'est l'idée clé de VGG. La <strong>convolution $1\times1$</strong> ne regarde aucun voisin : elle mélange les canaux en chaque pixel (combinaison linéaire), ce qui sert à réduire ou augmenter la profondeur à faible coût (blocs « bottleneck » de ResNet, Inception).</p>
+
+<!-- ===================================================== -->
+<h2 id="s9-4"><span class="n">9.4</span> Construction et entraînement d'un CNN</h2>
+
+<h3>Architecture type</h3>
+<p>Un CNN de classification enchaîne deux parties :</p>
+<ol>
+<li>un <strong>extracteur de caractéristiques</strong> (<em>backbone</em>) : répétition de blocs <code>[Conv → BatchNorm → ReLU] (×1 à 3) → Pooling</code>. À chaque étage, la résolution spatiale diminue et le nombre de canaux augmente (souvent doublé) ;</li>
+<li>une <strong>tête de classification</strong> : Global Average Pooling (ou aplatissement) → une ou plusieurs couches linéaires → logits → softmax.</li>
+</ol>
+
+<figure>{{fig:cnnarch}}<figcaption><b>Figure 9.4</b> — CNN pour CIFAR-10 (images 32×32, 10 classes). Les dimensions sont indiquées au format C×H×W.</figcaption></figure>
+
+<p>Cette organisation crée une <strong>hiérarchie de représentations</strong> : les premières couches détectent des bords et des couleurs, les couches intermédiaires des textures et des formes simples, les couches profondes des parties d'objets puis des objets entiers (visualisations de Zeiler &amp; Fergus, 2014).</p>
+
+<h3>Implémentation PyTorch</h3>
+<pre class="py">
+import torch
+import torch.nn as nn
+
+def conv_block(c_in, c_out):
+    return nn.Sequential(
+        nn.Conv2d(c_in, c_out, kernel_size=3, padding=1, bias=False),  # biais inutile avant BN
+        nn.BatchNorm2d(c_out),
+        nn.ReLU(inplace=True),
+    )
+
+class SmallCNN(nn.Module):
+    def __init__(self, n_classes=10):
+        super().__init__()
+        self.features = nn.Sequential(
+            conv_block(3, 32),   nn.MaxPool2d(2),     # 32x32 -> 16x16
+            conv_block(32, 64),  nn.MaxPool2d(2),     # 16x16 -> 8x8
+            conv_block(64, 128),
+            nn.AdaptiveAvgPool2d(1),                  # Global Average Pooling -> (N, 128, 1, 1)
+        )
+        self.classifier = nn.Sequential(nn.Flatten(), nn.Dropout(0.3), nn.Linear(128, n_classes))
+
+    def forward(self, x):                             # x : (N, 3, 32, 32)
+        return self.classifier(self.features(x))      # logits : (N, 10)
+
+model = SmallCNN()
+print(sum(p.numel() for p in model.parameters()))     # 94 762 paramètres
+</pre>
+
+<table>
+<tr><th>Couche</th><th>Sortie (C×H×W)</th><th>Paramètres</th><th>Champ réceptif</th></tr>
+<tr><td>Entrée</td><td>3×32×32</td><td>—</td><td>1</td></tr>
+<tr><td>Conv 3×3 (3→32) + BN</td><td>32×32×32</td><td>864 + 64</td><td>3</td></tr>
+<tr><td>MaxPool 2×2</td><td>32×16×16</td><td>0</td><td>4</td></tr>
+<tr><td>Conv 3×3 (32→64) + BN</td><td>64×16×16</td><td>18 432 + 128</td><td>8</td></tr>
+<tr><td>MaxPool 2×2</td><td>64×8×8</td><td>0</td><td>10</td></tr>
+<tr><td>Conv 3×3 (64→128) + BN</td><td>128×8×8</td><td>73 728 + 256</td><td>18</td></tr>
+<tr><td>Global Avg Pool + Linear</td><td>10</td><td>1 290</td><td>image entière</td></tr>
+</table>
+
+<h3>Entraînement</h3>
+<ul>
+<li><strong>Perte</strong> : entropie croisée sur les logits, $\mathcal{L} = -\frac{1}{N}\sum_{n}\log \softmax(z_n)_{y_n}$ (<code>nn.CrossEntropyLoss</code> applique le softmax en interne).</li>
+<li><strong>Optimiseur</strong> : SGD avec momentum 0,9 et <em>weight decay</em> $5\cdot10^{-4}$ (référence en vision), ou Adam/AdamW ($10^{-3}$) pour converger vite. Planification du taux d'apprentissage : <em>cosine annealing</em> ou <em>OneCycle</em>.</li>
+<li><strong>Augmentation de données</strong> (sur l'entraînement uniquement) : recadrage aléatoire, retournement horizontal, variations de couleur, <em>RandAugment</em>, <em>Mixup/CutMix</em>. C'est le régularisateur le plus efficace en vision.</li>
+<li><strong>BatchNorm</strong> stabilise et accélère l'apprentissage ; penser à <code>model.train()</code> / <code>model.eval()</code>, car BN et Dropout se comportent différemment.</li>
+</ul>
+
+<pre class="py">
+train_tf = T.Compose([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(), T.ToTensor(),
+                      T.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))])
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = SmallCNN().to(device)
+criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+optimizer = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=30)
+
+for epoch in range(30):
+    model.train()
+    for x, y in train_loader:
+        x, y = x.to(device), y.to(device)
+        loss = criterion(model(x), y)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+    scheduler.step()
+    # ... boucle de validation avec model.eval() et torch.no_grad()
+</pre>
+
+<h3>Architectures de référence</h3>
+<table>
+<tr><th>Modèle</th><th>Année</th><th>Idée clé</th><th>Paramètres</th></tr>
+<tr><td>LeNet-5</td><td>1998</td><td>Premier CNN opérationnel (chiffres manuscrits) : conv → pool → dense.</td><td>≈ 60 k</td></tr>
+<tr><td>AlexNet</td><td>2012</td><td>ReLU, Dropout, GPU ; remporte ImageNet avec un écart spectaculaire.</td><td>61 M</td></tr>
+<tr><td>VGG-16</td><td>2014</td><td>Uniquement des convolutions 3×3 empilées ; profondeur 16.</td><td>138 M</td></tr>
+<tr><td>Inception / GoogLeNet</td><td>2014</td><td>Branches parallèles 1×1, 3×3, 5×5 ; convolutions 1×1 de réduction.</td><td>6,8 M</td></tr>
+<tr><td>ResNet-50</td><td>2015</td><td>Connexions résiduelles : réseaux de plus de 100 couches entraînables.</td><td>25,6 M</td></tr>
+<tr><td>MobileNet / EfficientNet</td><td>2017–19</td><td>Convolutions séparables en profondeur ; mise à l'échelle équilibrée.</td><td>4–66 M</td></tr>
+<tr><td>ConvNeXt</td><td>2022</td><td>CNN « modernisé » avec les recettes des Transformers.</td><td>28–198 M</td></tr>
+</table>
+
+<div class="box def"><span class="t">Le bloc résiduel (ResNet)</span>
+<p>Au lieu d'apprendre directement une transformation $H(x)$, le bloc apprend un <strong>résidu</strong> $F(x)=H(x)-x$ et calcule $y = \operatorname{ReLU}\big(F(x) + x\big)$. Le gradient traverse le raccourci sans atténuation, $\frac{\partial y}{\partial x} = \frac{\partial F}{\partial x} + I$, ce qui résout le problème de dégradation des réseaux très profonds.</p>
+</div>
+<figure>{{fig:residual}}<figcaption><b>Figure 9.5</b> — Bloc résiduel : la sortie est la somme de la transformation apprise et de l'entrée.</figcaption></figure>
+
+<!-- ===================================================== -->
+<h2 id="s9-5"><span class="n">9.5</span> Comparaison entre MLP et CNN</h2>
+
+<p>Un MLP et un CNN sont tous deux des approximateurs universels ; la différence tient à leur <strong>biais inductif</strong>, c'est-à-dire aux hypothèses intégrées dans l'architecture. Le CNN suppose que l'information est <em>locale</em> et que les motifs peuvent apparaître <em>n'importe où</em> : hypothèses vraies pour les images, qui le rendent beaucoup plus efficace.</p>
+
+<table>
+<tr><th>Critère</th><th>MLP (perceptron multicouche)</th><th>CNN (réseau convolutif)</th></tr>
+<tr><td>Entrée</td><td>Vecteur aplati : la structure 2D est perdue.</td><td>Tenseur C×H×W : la topologie est conservée.</td></tr>
+<tr><td>Connexions</td><td>Totales : chaque neurone voit tous les pixels.</td><td>Locales : champ réceptif K×K.</td></tr>
+<tr><td>Poids</td><td>Un poids distinct par connexion.</td><td>Partagés sur toutes les positions.</td></tr>
+<tr><td>Paramètres (CIFAR-10)</td><td>3072→512→256→10 : <b>1,71 M</b></td><td>SmallCNN (9.4) : <b>0,095 M</b></td></tr>
+<tr><td>Translation</td><td>Aucune invariance : un objet décalé est une entrée « nouvelle ».</td><td>Équivariance (conv) + invariance approximative (pooling).</td></tr>
+<tr><td>Taille d'entrée</td><td>Fixe.</td><td>Variable (avec GAP).</td></tr>
+<tr><td>Précision CIFAR-10 typique</td><td>≈ 50–60 %</td><td>≈ 85–90 % (petit CNN), &gt; 95 % (ResNet)</td></tr>
+<tr><td>Usage adapté</td><td>Données tabulaires, vecteurs de caractéristiques, têtes de classification.</td><td>Images, vidéo, spectrogrammes audio, signaux 1D, grilles.</td></tr>
+</table>
+
+<div class="box key"><span class="t">À noter</span>
+<p>Les <strong>Vision Transformers</strong> (ViT, partie 11) ont un biais inductif plus faible encore que les CNN : ils découpent l'image en patchs de $16\times16$ traités comme des tokens. Ils dépassent les CNN avec <em>beaucoup</em> de données de préentraînement, mais les CNN restent plus efficaces sur des petits jeux de données et sur matériel embarqué.</p>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s9-6"><span class="n">9.6</span> Utilisation d'un modèle préentraîné</h2>
+
+<p>Entraîner un CNN performant depuis zéro exige des millions d'images étiquetées et des heures ou jours de GPU. Un <strong>modèle préentraîné</strong> a déjà appris ces représentations sur un grand jeu de données, typiquement <strong>ImageNet-1k</strong> (1,28 million d'images, 1 000 classes). On peut l'utiliser directement pour prédire, ou comme point de départ d'une nouvelle tâche (apprentissage par transfert).</p>
+
+<div class="box def"><span class="t">Apprentissage par transfert</span>
+<p>Réutiliser les paramètres $\theta^{*}_{source}$ appris sur une tâche source (grande, générique) comme <strong>initialisation</strong> pour une tâche cible (souvent petite). Les caractéristiques génériques (bords, textures, formes) se transfèrent ; seules les couches spécifiques doivent être adaptées.</p>
+</div>
+
+<h3>Sources de modèles</h3>
+<ul>
+<li><code>torchvision.models</code> : ResNet, EfficientNet, ConvNeXt, ViT, MobileNet… avec des poids versionnés.</li>
+<li><code>timm</code> (PyTorch Image Models) : plus de 1 000 architectures et poids.</li>
+<li><strong>Hugging Face Hub</strong> : modèles de vision (ViT, DINOv2, CLIP, ConvNeXt).</li>
+</ul>
+
+<h3>Règle d'or : reproduire le prétraitement d'origine</h3>
+<p>Le modèle n'a « vu » que des images redimensionnées et normalisées d'une certaine manière (taille, moyenne, écart-type, ordre RGB). Il faut appliquer <strong>exactement le même prétraitement</strong> en inférence, sinon les performances chutent fortement. Avec torchvision, l'objet <code>weights.transforms()</code> fournit ce prétraitement.</p>
+
+<pre class="py">
+import torch
+from torchvision.models import resnet50, ResNet50_Weights
+
+weights = ResNet50_Weights.IMAGENET1K_V2
+model = resnet50(weights=weights).eval()          # mode évaluation : BN figée, pas de dropout
+preprocess = weights.transforms()                 # prétraitement exact utilisé à l'entraînement
+
+x = preprocess(img).unsqueeze(0)                  # (1, 3, 224, 224)
+with torch.no_grad():                             # pas de graphe de calcul -> plus rapide
+    probs = model(x).softmax(dim=1)
+top5 = probs.topk(5)
+for p, i in zip(top5.values[0], top5.indices[0]):
+    print(f"{weights.meta['categories'][i]:<20} {p:.1%}")
+</pre>
+
+<div class="box warn"><span class="t">Pièges fréquents</span>
+<ul>
+<li>Oublier <code>model.eval()</code> : la BatchNorm utilise alors les statistiques du lot courant, prédictions instables.</li>
+<li>Normalisation différente de celle du préentraînement, ou images en BGR (OpenCV).</li>
+<li>Vérifier la <strong>licence</strong> des poids et le domaine d'origine : un modèle ImageNet est peu adapté, tel quel, aux radiographies.</li>
+</ul>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s9-7"><span class="n">9.7</span> Extraction de représentations et fine-tuning</h2>
+
+<p>Un CNN préentraîné se décompose en un backbone $\phi_\theta$ (tout sauf la dernière couche) et une tête $g_\psi$. Le backbone transforme une image en un <strong>vecteur de représentation</strong> (<em>embedding</em>) $h=\phi_\theta(x)\in\R^{d}$ ($d=2048$ pour ResNet-50, $512$ pour ResNet-18). On remplace la tête d'origine (1 000 classes ImageNet) par une nouvelle tête adaptée aux $K$ classes cibles, puis on choisit ce qu'on entraîne.</p>
+
+<figure>{{fig:transfer}}<figcaption><b>Figure 9.6</b> — Deux stratégies de transfert : backbone gelé (A) ou réentraîné partiellement avec un faible taux d'apprentissage (B).</figcaption></figure>
+
+<h3>Stratégie A — Extraction de caractéristiques (<em>feature extraction</em>)</h3>
+<p>Tous les paramètres du backbone sont <strong>gelés</strong> ($\theta$ fixe) ; seule la nouvelle tête est entraînée :</p>
+$$\min_{\psi}\; \frac{1}{N}\sum_{n=1}^{N} \mathcal{L}\big(g_\psi(\phi_{\theta^*}(x_n)),\, y_n\big).$$
+<p>Rapide, peu gourmand en mémoire, très robuste au surapprentissage : idéal avec quelques centaines d'images. On peut même pré-calculer les embeddings une fois pour toutes et entraîner un classifieur simple (régression logistique, k-NN, SVM). Les embeddings servent aussi à la recherche d'images similaires (similarité cosinus) ou au clustering.</p>
+
+<pre class="py">
+import torch.nn as nn
+from torchvision.models import resnet50, ResNet50_Weights
+
+model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+for p in model.parameters():
+    p.requires_grad = False                       # gel du backbone
+model.fc = nn.Linear(model.fc.in_features, 5)     # nouvelle tête : 2048 -> 5 classes (entraînable)
+
+optimizer = torch.optim.AdamW(model.fc.parameters(), lr=1e-3)
+# Extraction d'embeddings seuls : model.fc = nn.Identity() -> sortie (N, 2048)
+</pre>
+
+<h3>Stratégie B — Fine-tuning (ajustement fin)</h3>
+<p>On <strong>dégèle</strong> tout ou partie du backbone et on poursuit l'entraînement sur la tâche cible, avec un taux d'apprentissage <strong>10 à 100 fois plus faible</strong> qu'à l'entraînement initial, pour ajuster les représentations sans détruire ce qui a été appris (<em>oubli catastrophique</em>).</p>
+<ol>
+<li>Entraîner d'abord la tête seule quelques époques (backbone gelé) : évite que les gradients d'une tête aléatoire n'abîment le backbone.</li>
+<li>Dégeler progressivement les blocs, du plus haut au plus bas (<em>gradual unfreezing</em>).</li>
+<li>Utiliser des <strong>taux d'apprentissage différenciés</strong> : faible pour les couches basses (génériques), plus élevé pour les couches hautes et la tête.</li>
+</ol>
+
+<pre class="py">
+for p in model.parameters():
+    p.requires_grad = True                        # dégel
+optimizer = torch.optim.AdamW([
+    {"params": model.layer3.parameters(), "lr": 1e-5},   # couches intermédiaires : très lent
+    {"params": model.layer4.parameters(), "lr": 1e-4},   # couches hautes : lent
+    {"params": model.fc.parameters(),     "lr": 1e-3},   # tête : normal
+], weight_decay=1e-4)
+# conv1, layer1 et layer2 restent gelés (non passés à l'optimiseur, requires_grad=False conseillé)
+</pre>
+
+<h3>Quelle stratégie choisir ?</h3>
+<figure>{{fig:quadrant}}<figcaption><b>Figure 9.7</b> — Choix de la stratégie selon la taille du jeu cible et sa ressemblance avec le domaine source.</figcaption></figure>
+
+<div class="box key"><span class="t">Bonnes pratiques</span>
+<ul>
+<li>Garder la même résolution et normalisation que le modèle source ; utiliser une augmentation de données adaptée au domaine.</li>
+<li>Sur de très petits lots, garder les couches BatchNorm en mode <code>eval()</code> (statistiques gelées) pendant le fine-tuning.</li>
+<li>Toujours comparer à une <strong>référence</strong> : tête linéaire sur backbone gelé. Si le fine-tuning ne fait pas mieux, il surapprend.</li>
+<li>Surveiller la validation et utiliser l'arrêt anticipé ; le fine-tuning converge en peu d'époques (5 à 20).</li>
+</ul>
+</div>
+
+<div class="box recap"><span class="t">À retenir — Partie 9</span>
+<ul>
+<li>Une image est un tenseur $C\times H\times W$ ; on la redimensionne, on la met à l'échelle et on la normalise par canal.</li>
+<li>La convolution applique un même petit filtre appris sur toute l'image : connectivité locale, partage des poids, équivariance par translation.</li>
+<li>Taille de sortie : $\lfloor (H+2P-K)/S\rfloor+1$ ; le pooling sous-échantillonne sans paramètres ; le champ réceptif croît avec la profondeur.</li>
+<li>CNN = backbone [Conv-BN-ReLU-Pool] + tête (GAP + Linear) ; les connexions résiduelles permettent la grande profondeur.</li>
+<li>Un CNN est 10 à 100 fois plus économe en paramètres qu'un MLP et bien plus précis sur les images.</li>
+<li>Transfert : extraction de caractéristiques (backbone gelé) avec peu de données ; fine-tuning à faible taux d'apprentissage sinon.</li>
+</ul>
+</div>
+</section>

@@ -1,0 +1,279 @@
+<section class="part s10">
+<div class="part-head">
+  <div class="num">10</div>
+  <div class="kicker">Partie 10</div>
+  <h1 data-toc="Partie 10 · Données séquentielles et réseaux récurrents" data-cls="s10" data-find="10.1 Séquences et séries">Données séquentielles et réseaux récurrents</h1>
+  <div class="intro">Texte, parole, capteurs, cours financiers : dans une séquence, l'ordre porte l'information. Les réseaux récurrents (RNN) traitent les éléments un à un en maintenant une mémoire, l'état caché. Les LSTM et GRU ajoutent des portes qui contrôlent cette mémoire pour capturer des dépendances longues.</div>
+</div>
+<div class="part-toc">
+  <span><b>10.1</b>Séquences et séries temporelles</span>
+  <span><b>10.2</b>Fenêtres temporelles et préparation des données</span>
+  <span><b>10.3</b>Réseaux récurrents (RNN)</span>
+  <span><b>10.4</b>État caché et dépendances temporelles</span>
+  <span><b>10.5</b>Introduction aux LSTM et GRU</span>
+  <span><b>10.6</b>Évaluation avec un découpage chronologique</span>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s10-1"><span class="n">10.1</span> Séquences et séries temporelles</h2>
+
+<div class="box def"><span class="t">Définitions</span>
+<p>Une <strong>séquence</strong> est une suite ordonnée $x_{1:T} = (x_1, x_2, \dots, x_T)$ avec $x_t\in\R^{F}$ ($F$ caractéristiques par pas de temps). L'ordre est essentiel : permuter les éléments change le sens. Une <strong>série temporelle</strong> est une séquence dont les observations sont indexées par le temps, généralement à intervalles réguliers (pas horaire, journalier…).</p>
+</div>
+
+<p>Contrairement aux données tabulaires, les observations ne sont <strong>pas indépendantes</strong> : $x_t$ dépend de son passé. La longueur $T$ peut aussi varier d'un exemple à l'autre (phrases de longueurs différentes).</p>
+
+<table>
+<tr><th>Domaine</th><th>Exemple de séquence</th><th>Tâche typique</th></tr>
+<tr><td>Langage</td><td>Suite de mots / tokens</td><td>Classification de sentiment, traduction, génération</td></tr>
+<tr><td>Audio</td><td>Échantillons ou trames de spectrogramme</td><td>Reconnaissance vocale</td></tr>
+<tr><td>Capteurs / IoT</td><td>Température, vibrations, consommation électrique</td><td>Prévision, détection d'anomalies</td></tr>
+<tr><td>Finance</td><td>Prix, volumes</td><td>Prévision, gestion du risque</td></tr>
+<tr><td>Santé</td><td>ECG, séjours hospitaliers</td><td>Diagnostic, prédiction d'événements</td></tr>
+</table>
+
+<h3>Types de tâches séquentielles</h3>
+<ul>
+<li><strong>Plusieurs-vers-un</strong> (<em>many-to-one</em>) : une séquence → une sortie (sentiment d'une critique, prévision de la valeur suivante).</li>
+<li><strong>Plusieurs-vers-plusieurs synchronisé</strong> : une sortie par pas (étiquetage morpho-syntaxique, segmentation).</li>
+<li><strong>Séquence-vers-séquence</strong> (<em>seq2seq</em>) : longueurs d'entrée et de sortie différentes (traduction, prévision multi-horizon).</li>
+<li><strong>Un-vers-plusieurs</strong> : une entrée → une séquence (légende d'image, génération musicale).</li>
+</ul>
+
+<h3>Composantes d'une série temporelle</h3>
+<p>On décompose souvent une série en $y_t = \underbrace{T_t}_{\text{tendance}} + \underbrace{S_t}_{\text{saisonnalité}} + \underbrace{\varepsilon_t}_{\text{bruit}}$ (modèle additif ; multiplicatif si l'amplitude saisonnière croît avec le niveau).</p>
+
+<figure>{{fig:timeseries}}<figcaption><b>Figure 10.1</b> — Série mensuelle simulée : tendance linéaire + saisonnalité de période 12 + bruit.</figcaption></figure>
+
+<ul>
+<li><strong>Stationnarité</strong> : moyenne, variance et autocorrélations constantes dans le temps. Beaucoup de méthodes la supposent ; on s'en approche par différenciation ($\Delta y_t = y_t - y_{t-1}$) ou par passage au logarithme.</li>
+<li><strong>Autocorrélation</strong> au décalage $k$ : mesure la dépendance entre la série et sa version retardée. Un pic à $k=12$ révèle une saisonnalité annuelle sur des données mensuelles.
+$$\rho(k) = \frac{\sum_{t=1}^{T-k}(y_t-\bar y)(y_{t+k}-\bar y)}{\sum_{t=1}^{T}(y_t-\bar y)^2}$$</li>
+<li>Séries <strong>univariées</strong> ($F=1$) ou <strong>multivariées</strong> (plusieurs variables, plus des covariables connues à l'avance : calendrier, jours fériés, météo prévue).</li>
+</ul>
+
+<!-- ===================================================== -->
+<h2 id="s10-2"><span class="n">10.2</span> Fenêtres temporelles et préparation des données</h2>
+
+<p>Un réseau de neurones apprend sur des couples $(X, y)$. Pour une série unique, on crée ces couples par <strong>fenêtres glissantes</strong> : on prend $L$ pas passés en entrée (<em>lookback</em>) et les $H$ pas suivants comme cible (<em>horizon</em>).</p>
+
+<div class="box math"><span class="t">Construction des exemples</span>
+$$X^{(n)} = (x_{n},\dots,x_{n+L-1}) \in \R^{L\times F}, \qquad y^{(n)} = (y_{n+L},\dots,y_{n+L+H-1}) \in \R^{H}$$
+<p>Avec un glissement de 1, une série de longueur $T$ donne $N = T - L - H + 1$ exemples, empilés en un tenseur $(N, L, F)$ : format <code>batch_first</code> attendu par <code>nn.RNN</code>, <code>nn.LSTM</code>, <code>nn.GRU</code>.</p>
+</div>
+
+<figure>{{fig:windows}}<figcaption><b>Figure 10.2</b> — Fenêtres glissantes : L = 5 pas d'historique servent à prédire les H = 2 pas suivants.</figcaption></figure>
+
+<pre class="py">
+import numpy as np
+
+def make_windows(series, L, H, target_col=0):
+    """series : (T, F) -> X : (N, L, F), y : (N, H)"""
+    T = len(series)
+    X = np.stack([series[i:i + L] for i in range(T - L - H + 1)])
+    y = np.stack([series[i + L:i + L + H, target_col] for i in range(T - L - H + 1)])
+    return X.astype(np.float32), y.astype(np.float32)
+
+# 1) découpage chronologique AVANT tout calcul de statistique
+n = len(data); i_tr, i_va = int(0.7 * n), int(0.85 * n)
+train, val, test = data[:i_tr], data[i_tr - L:i_va], data[i_va - L:]   # recouvrement de L pas pour l'historique
+# 2) normalisation ajustée sur l'entraînement uniquement
+mu, sd = train.mean(axis=0), train.std(axis=0)
+train, val, test = [(d - mu) / sd for d in (train, val, test)]
+# 3) fenêtres
+X_tr, y_tr = make_windows(train, L=48, H=24)
+</pre>
+
+<h3>Choix et étapes clés</h3>
+<ul>
+<li><strong>Longueur $L$</strong> : doit couvrir les dépendances utiles (au moins une période saisonnière). Trop courte : information manquante ; trop longue : bruit, coût, gradients difficiles pour un RNN.</li>
+<li><strong>Normalisation</strong> : standardisation ou min-max, <strong>ajustée sur l'entraînement seulement</strong> (sinon fuite d'information du futur). On inverse la transformation pour exprimer les erreurs dans l'unité d'origine.</li>
+<li><strong>Caractéristiques temporelles</strong> : encodage cyclique de l'heure ou du mois, $\big(\sin\frac{2\pi h}{24}, \cos\frac{2\pi h}{24}\big)$, qui place 23 h à côté de 0 h ; retards (<em>lags</em>) ; moyennes mobiles calculées uniquement avec le passé.</li>
+<li><strong>Valeurs manquantes</strong> : interpolation, report de la dernière valeur (<em>forward fill</em>), éventuellement un indicateur binaire de valeur manquante.</li>
+<li><strong>Prévision multi-pas</strong> : <em>stratégie directe</em> (le modèle sort les $H$ valeurs d'un coup) ou <em>récursive</em> (on prédit $t+1$, on réinjecte la prédiction, etc. ; les erreurs s'accumulent).</li>
+</ul>
+
+<h3>Séquences de longueur variable (texte)</h3>
+<p>Pour regrouper des phrases de longueurs différentes dans un lot, on les <strong>complète</strong> (<em>padding</em>) avec un token spécial jusqu'à la longueur maximale du lot, et on indique au réseau d'ignorer ces positions : masque, ou <code>nn.utils.rnn.pack_padded_sequence</code> qui évite au RNN de traiter le remplissage.</p>
+
+<!-- ===================================================== -->
+<h2 id="s10-3"><span class="n">10.3</span> Réseaux récurrents (RNN)</h2>
+
+<p>Un MLP traite une entrée de taille fixe et n'a aucune mémoire. Un <strong>réseau récurrent</strong> lit la séquence pas à pas et met à jour un vecteur interne, l'<strong>état caché</strong> $h_t\in\R^{d_h}$, qui résume tout ce qui a été vu jusque-là. La même cellule, avec les <strong>mêmes poids</strong>, est appliquée à chaque instant : c'est le partage des poids <em>dans le temps</em> (comme la convolution partage ses poids dans l'espace).</p>
+
+<div class="box math"><span class="t">Équations du RNN simple (Elman, 1990)</span>
+$$\boxed{\;h_t = \tanh\!\big(W_{xh}\,x_t + W_{hh}\,h_{t-1} + b_h\big)\;} \qquad \hat y_t = W_{hy}\,h_t + b_y$$
+<p>avec $W_{xh}\in\R^{d_h\times F}$, $W_{hh}\in\R^{d_h\times d_h}$, $W_{hy}\in\R^{d_{out}\times d_h}$ et $h_0 = 0$. Nombre de paramètres de la cellule : $d_h(F + d_h) + 2d_h$ dans PyTorch (deux vecteurs de biais), <strong>indépendant de $T$</strong>.</p>
+</div>
+
+<figure>{{fig:rnn}}<figcaption><b>Figure 10.3</b> — Un RNN replié (boucle de récurrence) est équivalent à un réseau profond « déplié » dans le temps dont toutes les couches partagent les poids.</figcaption></figure>
+
+<p>Pour une tâche <em>many-to-one</em> (classification, prévision), on n'utilise que le dernier état $h_T$ (ou un pooling sur tous les $h_t$). Pour une tâche synchronisée, on utilise chaque $\hat y_t$.</p>
+
+<pre class="py">
+import torch.nn as nn
+
+rnn = nn.RNN(input_size=8, hidden_size=64, num_layers=1, batch_first=True)
+x = torch.randn(32, 48, 8)        # (N, L, F) : 32 fenêtres de 48 pas, 8 variables
+out, h_n = rnn(x)
+print(out.shape)                  # (32, 48, 64) : h_t pour chaque pas t
+print(h_n.shape)                  # (1, 32, 64)  : dernier état h_T (par couche)
+</pre>
+
+<h3>Variantes</h3>
+<ul>
+<li><strong>RNN empilé</strong> (<code>num_layers=2</code> ou plus) : la séquence des $h_t$ d'une couche est l'entrée de la suivante ; représentations plus abstraites.</li>
+<li><strong>RNN bidirectionnel</strong> (<code>bidirectional=True</code>) : un RNN lit de gauche à droite, un autre de droite à gauche ; on concatène $[\overrightarrow{h_t};\overleftarrow{h_t}]$. Utile quand toute la séquence est disponible (texte), <strong>interdit</strong> en prévision (cela reviendrait à regarder le futur).</li>
+<li><strong>Encodeur-décodeur</strong> (seq2seq) : un RNN encode la source en un vecteur, un second RNN génère la cible ; ancêtre direct des Transformers (partie 11).</li>
+</ul>
+
+<!-- ===================================================== -->
+<h2 id="s10-4"><span class="n">10.4</span> État caché et dépendances temporelles</h2>
+
+<p>L'état caché est une <strong>mémoire compressée de taille fixe</strong> : $h_t = f(h_{t-1}, x_t)$ dépend récursivement de tout le passé $x_{1:t}$. Il doit encoder ce qui sera utile plus tard (le sujet d'une phrase pour accorder un verbe vingt mots après, la tendance récente d'une série…). Une <strong>dépendance à long terme</strong> relie une sortie à une entrée lointaine ; c'est là que le RNN simple échoue.</p>
+
+<h3>Rétropropagation dans le temps (BPTT)</h3>
+<p>On entraîne le RNN déplié comme un réseau profond : la perte totale $\mathcal{L}=\sum_t \mathcal{L}_t$ est rétropropagée à travers tous les pas de temps, et les gradients des poids partagés s'additionnent sur les instants. Le signal reliant l'instant $t$ à un instant antérieur $k$ fait intervenir un <strong>produit de jacobiennes</strong> :</p>
+
+<div class="box math"><span class="t">Gradients évanescents et explosifs</span>
+$$\frac{\partial h_t}{\partial h_k} = \prod_{i=k+1}^{t} \frac{\partial h_i}{\partial h_{i-1}} = \prod_{i=k+1}^{t} \diag\!\big(1 - h_i^{2}\big)\, W_{hh}$$
+<p>En simplifiant, la norme de ce produit se comporte comme $\lambda^{t-k}$, où $\lambda$ dépend de la plus grande valeur singulière de $W_{hh}$ et de la dérivée de $\tanh$ ($\le 1$) :</p>
+<ul>
+<li>$\lambda &lt; 1$ : le gradient <strong>s'évanouit</strong> exponentiellement, le réseau n'apprend pas les dépendances longues (en pratique au-delà de 10 à 20 pas) ;</li>
+<li>$\lambda &gt; 1$ : le gradient <strong>explose</strong>, entraînement instable (pertes NaN).</li>
+</ul>
+</div>
+
+<figure>{{fig:vanish}}<figcaption><b>Figure 10.4</b> — Évolution d'un facteur λ<sup>t−k</sup> (échelle logarithmique) : quelques dizaines de pas suffisent à annuler ou faire exploser le gradient.</figcaption></figure>
+
+<h3>Remèdes</h3>
+<ul>
+<li><strong>Écrêtage du gradient</strong> (<em>gradient clipping</em>) contre l'explosion : si $\lVert g\rVert &gt; \tau$, $g \leftarrow \tau\, g/\lVert g\rVert$. En PyTorch : <code>torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)</code> entre <code>backward()</code> et <code>step()</code>.</li>
+<li><strong>BPTT tronquée</strong> : on rétropropage sur des segments de longueur limitée (coût mémoire maîtrisé).</li>
+<li><strong>Initialisation</strong> orthogonale ou identité de $W_{hh}$, normalisation.</li>
+<li>Contre l'évanouissement, la vraie solution est architecturale : des cellules à <strong>portes</strong> (LSTM, GRU) qui créent un chemin où l'information et le gradient circulent presque sans atténuation.</li>
+</ul>
+
+<!-- ===================================================== -->
+<h2 id="s10-5"><span class="n">10.5</span> Introduction aux LSTM et GRU</h2>
+
+<h3>LSTM — Long Short-Term Memory (Hochreiter &amp; Schmidhuber, 1997)</h3>
+<p>Le LSTM ajoute à l'état caché $h_t$ une <strong>cellule mémoire</strong> $c_t$, une « autoroute » de l'information mise à jour de façon <em>additive</em>. Trois <strong>portes</strong> à valeurs dans $[0,1]$ (sigmoïdes) décident, composante par composante, quoi oublier, quoi écrire et quoi exposer.</p>
+
+<div class="box math"><span class="t">Équations du LSTM</span>
+$$\begin{aligned}
+f_t &= \sigma\big(W_f\,[h_{t-1}, x_t] + b_f\big) && \text{porte d'oubli}\\
+i_t &= \sigma\big(W_i\,[h_{t-1}, x_t] + b_i\big) && \text{porte d'entrée}\\
+\tilde c_t &= \tanh\big(W_c\,[h_{t-1}, x_t] + b_c\big) && \text{contenu candidat}\\
+c_t &= f_t \odot c_{t-1} + i_t \odot \tilde c_t && \text{mise à jour de la mémoire}\\
+o_t &= \sigma\big(W_o\,[h_{t-1}, x_t] + b_o\big) && \text{porte de sortie}\\
+h_t &= o_t \odot \tanh(c_t) && \text{nouvel état caché}
+\end{aligned}$$
+<p class="small">$[h_{t-1},x_t]$ : concaténation ; $\odot$ : produit élément par élément ; $\sigma(z)=1/(1+e^{-z})$.</p>
+</div>
+
+<figure>{{fig:lstm}}<figcaption><b>Figure 10.5</b> — Cellule LSTM. La ligne supérieure (état de cellule c) ne subit qu'une multiplication par la porte d'oubli et une addition.</figcaption></figure>
+
+<p><strong>Pourquoi ça marche</strong> : $\frac{\partial c_t}{\partial c_{t-1}} = \diag(f_t)$ (en ignorant les dépendances indirectes). Si la porte d'oubli reste proche de 1, le gradient traverse de nombreux pas presque intact : c'est le <em>carrousel d'erreur constante</em>. Le réseau apprend lui-même quand retenir et quand effacer. Astuce courante : initialiser $b_f$ à 1 pour favoriser la mémorisation au début de l'entraînement.</p>
+
+<h3>GRU — Gated Recurrent Unit (Cho et al., 2014)</h3>
+<p>Version simplifiée : pas de cellule séparée, deux portes seulement.</p>
+<div class="box math"><span class="t">Équations du GRU</span>
+$$\begin{aligned}
+z_t &= \sigma\big(W_z\,[h_{t-1}, x_t] + b_z\big) && \text{porte de mise à jour}\\
+r_t &= \sigma\big(W_r\,[h_{t-1}, x_t] + b_r\big) && \text{porte de réinitialisation}\\
+\tilde h_t &= \tanh\big(W_h\,[\,r_t\odot h_{t-1},\, x_t] + b_h\big) && \text{état candidat}\\
+h_t &= (1 - z_t)\odot h_{t-1} + z_t \odot \tilde h_t && \text{interpolation}
+\end{aligned}$$
+<p class="small">La porte $z_t$ joue à la fois le rôle des portes d'oubli et d'entrée du LSTM. (PyTorch utilise la convention inverse : $h_t=(1-z_t)\odot\tilde h_t + z_t\odot h_{t-1}$ ; c'est équivalent.)</p>
+</div>
+
+<table>
+<tr><th>Critère</th><th>RNN simple</th><th>LSTM</th><th>GRU</th></tr>
+<tr><td>États</td><td>$h_t$</td><td>$h_t$ et $c_t$</td><td>$h_t$</td></tr>
+<tr><td>Portes</td><td>0</td><td>3 (oubli, entrée, sortie)</td><td>2 (mise à jour, réinitialisation)</td></tr>
+<tr><td>Paramètres</td><td>$1\times\big[d_h(F+d_h)+2d_h\big]$</td><td>$4\times$</td><td>$3\times$</td></tr>
+<tr><td>Dépendances longues</td><td>Faibles (≈ 10 pas)</td><td>Bonnes (centaines de pas)</td><td>Bonnes, proches du LSTM</td></tr>
+<tr><td>Quand l'utiliser</td><td>Pédagogie, séquences très courtes</td><td>Séquences longues, beaucoup de données</td><td>Plus rapide, petits jeux de données</td></tr>
+</table>
+
+<pre class="py">
+class LSTMForecaster(nn.Module):
+    def __init__(self, n_features, hidden=64, horizon=24, layers=2, dropout=0.2):
+        super().__init__()
+        self.lstm = nn.LSTM(n_features, hidden, num_layers=layers,
+                            batch_first=True, dropout=dropout)
+        self.head = nn.Linear(hidden, horizon)          # stratégie directe : H sorties
+
+    def forward(self, x):                               # x : (N, L, F)
+        out, (h_n, c_n) = self.lstm(x)                  # h_n : (layers, N, hidden)
+        return self.head(h_n[-1])                       # dernier état de la dernière couche -> (N, H)
+
+model = LSTMForecaster(n_features=8)
+loss = nn.MSELoss()(model(xb), yb)
+loss.backward()
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)   # sécurité anti-explosion
+optimizer.step()
+</pre>
+
+<div class="box key"><span class="t">Positionnement actuel</span>
+<p>Pour le texte, les LSTM/GRU ont été largement remplacés par les Transformers (partie 11), parallélisables et meilleurs sur les dépendances longues. Ils restent compétitifs pour des séries temporelles de taille modeste, le traitement en flux (<em>streaming</em>, coût constant par pas) et l'embarqué. Des architectures récurrentes modernes (state space models comme Mamba, xLSTM) reprennent ces idées à grande échelle.</p>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s10-6"><span class="n">10.6</span> Évaluation avec un découpage chronologique</h2>
+
+<p>Le découpage aléatoire train/validation/test, standard pour des données i.i.d., est <strong>incorrect</strong> pour une série temporelle : le modèle s'entraînerait sur des observations postérieures à celles qu'il doit prédire. C'est une <strong>fuite d'information</strong> (<em>look-ahead bias</em>) qui donne des scores optimistes, impossibles à reproduire en production où l'on ne connaît que le passé.</p>
+
+<div class="box def"><span class="t">Principe</span>
+<p>Toujours <strong>entraîner sur le passé, valider sur un futur proche, tester sur un futur plus lointain</strong> : $t_{train} &lt; t_{val} &lt; t_{test}$. Toutes les étapes ajustées sur les données (normalisation, imputation, sélection de variables) le sont sur l'ensemble d'entraînement seul.</p>
+</div>
+
+<figure>{{fig:chrono}}<figcaption><b>Figure 10.6</b> — Découpage aléatoire (à proscrire), découpage chronologique, et validation glissante à fenêtre croissante.</figcaption></figure>
+
+<h3>Validation glissante (<em>walk-forward</em> / <em>backtesting</em>)</h3>
+<p>Une seule coupure peut tomber sur une période atypique. On répète donc l'évaluation sur plusieurs origines successives : fenêtre d'entraînement <strong>croissante</strong> (<em>expanding</em>) ou <strong>glissante</strong> de taille fixe (<em>rolling</em>, adaptée si la dynamique évolue), puis on moyenne les scores. On peut laisser un <strong>écart</strong> (<em>gap</em>) entre entraînement et validation quand les fenêtres d'entrée se chevauchent ou que la cible est connue avec retard.</p>
+
+<pre class="py">
+from sklearn.model_selection import TimeSeriesSplit
+
+tscv = TimeSeriesSplit(n_splits=4, test_size=500, gap=24)   # fenêtre croissante + écart
+for k, (idx_tr, idx_va) in enumerate(tscv.split(X)):
+    model = build_model()
+    fit(model, X[idx_tr], y[idx_tr])                         # les indices de validation sont toujours postérieurs
+    scores.append(evaluate(model, X[idx_va], y[idx_va]))
+print(np.mean(scores), np.std(scores))
+</pre>
+
+<h3>Références naïves et métriques</h3>
+<p>Un modèle profond n'a de valeur que s'il bat des <strong>références simples</strong> :</p>
+<ul>
+<li><strong>Persistance</strong> : $\hat y_{t+1} = y_t$ ; <strong>naïf saisonnier</strong> : $\hat y_{t+h} = y_{t+h-m}$ ($m$ = période) ; moyenne mobile ; modèles statistiques (ARIMA, lissage exponentiel).</li>
+</ul>
+
+<div class="box math"><span class="t">Métriques de prévision</span>
+$$\text{MAE} = \frac1n\sum_t |y_t-\hat y_t| \qquad \text{RMSE} = \sqrt{\frac1n\sum_t (y_t-\hat y_t)^2} \qquad \text{MAPE} = \frac{100\%}{n}\sum_t \left|\frac{y_t-\hat y_t}{y_t}\right|$$
+$$\text{MASE} = \frac{\text{MAE}_{\text{modèle}}}{\frac{1}{T-m}\sum_{t=m+1}^{T}|y_t-y_{t-m}|} \qquad (\text{MASE} &lt; 1 \;\Leftrightarrow\; \text{meilleur que le naïf saisonnier})$$
+<p class="small">MAE : robuste, dans l'unité de la cible. RMSE : pénalise davantage les grosses erreurs. MAPE : en pourcentage, mais indéfini si $y_t=0$. MASE : comparable entre séries.</p>
+</div>
+
+<div class="box warn"><span class="t">Erreurs classiques</span>
+<ul>
+<li>Mélanger les fenêtres avant le découpage (<code>shuffle=True</code> sur l'ensemble complet). Le mélange est permis <em>à l'intérieur</em> de l'ensemble d'entraînement, une fois le découpage fait.</li>
+<li>Normaliser avec la moyenne de toute la série, ou calculer des moyennes mobiles centrées (qui utilisent le futur).</li>
+<li>Utiliser comme variable d'entrée une information qui ne sera pas disponible au moment de la prévision.</li>
+<li>Évaluer une prévision récursive avec les vraies valeurs réinjectées (<em>teacher forcing</em>) au lieu des prédictions.</li>
+</ul>
+</div>
+
+<div class="box recap"><span class="t">À retenir — Partie 10</span>
+<ul>
+<li>Dans une séquence, l'ordre porte l'information et les observations sont dépendantes (tendance, saisonnalité, autocorrélation).</li>
+<li>Les fenêtres glissantes transforment une série en exemples $(N, L, F)\to(N, H)$ ; la normalisation est ajustée sur l'entraînement seul.</li>
+<li>RNN : $h_t=\tanh(W_{xh}x_t+W_{hh}h_{t-1}+b)$, poids partagés dans le temps, entraînement par BPTT.</li>
+<li>Le produit de jacobiennes provoque l'évanouissement ou l'explosion des gradients ; l'écrêtage traite l'explosion.</li>
+<li>LSTM (3 portes + cellule additive) et GRU (2 portes) capturent les dépendances longues.</li>
+<li>Évaluation : découpage chronologique, validation glissante, comparaison aux références naïves, MAE/RMSE/MASE.</li>
+</ul>
+</div>
+</section>
