@@ -1,0 +1,338 @@
+<section class="part s11">
+<div class="part-head">
+  <div class="num">11</div>
+  <div class="kicker">Partie 11</div>
+  <h1 data-toc="Partie 11 · Attention et Transformers" data-cls="s11" data-find="11.1 Tokenisation et embeddings">Attention et Transformers</h1>
+  <div class="intro">Le Transformer (Vaswani et al., 2017, « Attention Is All You Need ») abandonne la récurrence : chaque élément d'une séquence regarde directement tous les autres grâce au mécanisme d'attention. Entièrement parallélisable, il est à la base de BERT, GPT, T5, des grands modèles de langage et des Vision Transformers.</div>
+</div>
+<div class="part-toc">
+  <span><b>11.1</b>Tokenisation et embeddings</span>
+  <span><b>11.2</b>Mécanisme d'attention et auto-attention</span>
+  <span><b>11.3</b>Query, key et value</span>
+  <span><b>11.4</b>Attention à plusieurs têtes</span>
+  <span><b>11.5</b>Information de position</span>
+  <span><b>11.6</b>Architecture générale des Transformers</span>
+  <span><b>11.7</b>Encodeurs et décodeurs</span>
+  <span><b>11.8</b>Modèles préentraînés avec Hugging Face</span>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s11-1"><span class="n">11.1</span> Tokenisation et embeddings</h2>
+
+<p>Un réseau ne manipule que des nombres. Le traitement d'un texte commence donc par deux étapes : la <strong>tokenisation</strong> (texte → suite d'unités discrètes appelées <em>tokens</em> → identifiants entiers) puis l'<strong>embedding</strong> (identifiant → vecteur dense appris).</p>
+
+<figure>{{fig:tokens}}<figcaption><b>Figure 11.1</b> — Du texte aux vecteurs : découpage en sous-mots, conversion en identifiants (valeurs illustratives), puis lecture des embeddings.</figcaption></figure>
+
+<h3>Niveaux de tokenisation</h3>
+<table>
+<tr><th>Niveau</th><th>Exemple pour « apprennent »</th><th>Avantages</th><th>Inconvénients</th></tr>
+<tr><td>Mot</td><td>[apprennent]</td><td>Tokens porteurs de sens</td><td>Vocabulaire énorme ; mots inconnus (OOV) remplacés par [UNK]</td></tr>
+<tr><td>Caractère</td><td>[a, p, p, r, e, …]</td><td>Vocabulaire minuscule, aucun mot inconnu</td><td>Séquences très longues, sens peu explicite</td></tr>
+<tr><td>Sous-mot</td><td>[app, ##rennent]</td><td>Compromis : 30 k–250 k tokens, tout mot est représentable</td><td>Découpages parfois peu intuitifs</td></tr>
+</table>
+
+<p>Les modèles modernes utilisent tous des <strong>sous-mots</strong> : les mots fréquents restent entiers, les mots rares sont décomposés en morceaux fréquents (racines, suffixes).</p>
+<ul>
+<li><strong>BPE</strong> (<em>Byte-Pair Encoding</em> ; GPT, RoBERTa, Llama) : on part des caractères (ou des octets) et on <strong>fusionne itérativement la paire adjacente la plus fréquente</strong> du corpus, jusqu'à la taille de vocabulaire voulue. Ex. : <code>l o w</code>, <code>l o w e r</code>, <code>l o w e s t</code> → fusion <code>l+o</code> → <code>lo</code>, puis <code>lo+w</code> → <code>low</code>, puis <code>e+r</code>…</li>
+<li><strong>WordPiece</strong> (BERT) : fusion de la paire qui maximise la vraisemblance du corpus ; les suites de mots sont préfixées par <code>##</code>.</li>
+<li><strong>Unigram / SentencePiece</strong> (T5, CamemBERT, XLM-R) : travaille sur le texte brut (espaces encodés par <code>▁</code>), indépendant de la langue.</li>
+</ul>
+<p>Le tokeniseur ajoute des <strong>tokens spéciaux</strong> : <code>[CLS]</code> (représentation de la phrase entière pour la classification), <code>[SEP]</code> (séparateur), <code>[PAD]</code> (remplissage), <code>[MASK]</code>, <code>&lt;s&gt;</code> / <code>&lt;/s&gt;</code> (début et fin de séquence). Il fournit aussi un <strong>masque d'attention</strong> (1 = vrai token, 0 = remplissage). Un modèle doit <strong>toujours</strong> être utilisé avec son propre tokeniseur.</p>
+
+<h3>Embeddings</h3>
+<div class="box def"><span class="t">Couche d'embedding</span>
+<p>Une matrice apprise $E\in\R^{|V|\times d}$ ($|V|$ : taille du vocabulaire, $d$ : dimension du modèle). Le token d'identifiant $i$ est représenté par la ligne $e_i = E[i,:]$, ce qui équivaut à multiplier un vecteur <em>one-hot</em> par $E$ : $\;e_i = \mathbf{1}_i^{\top} E$. Pour BERT-base : $30\,522\times768 \approx 23{,}4$ M paramètres.</p>
+</div>
+<p>Contrairement à l'encodage one-hot (vecteurs orthogonaux, aucune notion de proximité), les embeddings appris placent les tokens de sens voisin à proximité. On mesure cette proximité par la <strong>similarité cosinus</strong> $\cos(u,v)=\frac{u\cdot v}{\lVert u\rVert\,\lVert v\rVert}$. Les embeddings statiques (Word2Vec, GloVe) donnent un seul vecteur par mot ; ceux d'un Transformer sont ensuite <strong>contextualisés</strong> par les couches d'attention (« avocat » le fruit ≠ « avocat » le juriste).</p>
+
+<pre class="py">
+from transformers import AutoTokenizer
+
+tok = AutoTokenizer.from_pretrained("bert-base-multilingual-cased")
+enc = tok(["Les transformers apprennent vite"], padding=True, truncation=True,
+          max_length=128, return_tensors="pt")
+print(tok.convert_ids_to_tokens(enc["input_ids"][0]))   # ['[CLS]', 'Les', ..., '[SEP]'] (sous-mots préfixés par ##)
+print(enc["attention_mask"])                            # 1 = token réel, 0 = padding
+</pre>
+
+<!-- ===================================================== -->
+<h2 id="s11-2"><span class="n">11.2</span> Mécanisme d'attention et auto-attention</h2>
+
+<h3>Motivation : le goulot d'étranglement des RNN</h3>
+<p>Dans un encodeur-décodeur RNN (10.3), toute la phrase source est compressée dans <strong>un seul vecteur</strong> de taille fixe $h_T$ : les phrases longues sont mal traduites. Bahdanau et al. (2015) proposent que le décodeur, à chaque étape, <strong>regarde tous les états de l'encodeur</strong> et choisisse les plus pertinents. C'est le mécanisme d'attention.</p>
+
+<div class="box math"><span class="t">Attention : forme générale</span>
+<p>Étant donnés une requête $q$ et des paires (clé $k_j$, valeur $v_j$) pour $j=1,\dots,n$ :</p>
+$$\underbrace{s_j = \operatorname{score}(q, k_j)}_{\text{pertinence}} \qquad \underbrace{\alpha_j = \frac{e^{s_j}}{\sum_{l=1}^{n} e^{s_l}}}_{\text{poids : } \alpha_j\ge 0,\ \sum_j\alpha_j=1} \qquad \underbrace{c = \sum_{j=1}^{n}\alpha_j\, v_j}_{\text{contexte}}$$
+<p>L'attention est une <strong>recherche douce et différentiable</strong> dans une mémoire : au lieu de récupérer une seule valeur (comme un dictionnaire), on récupère une moyenne pondérée de toutes les valeurs, pondérée par la similarité requête/clé.</p>
+</div>
+
+<h3>Auto-attention (<em>self-attention</em>)</h3>
+<p>Dans l'auto-attention, requêtes, clés et valeurs proviennent <strong>de la même séquence</strong> : chaque token interroge tous les autres tokens (y compris lui-même) pour construire une nouvelle représentation enrichie de son contexte. Dans « Le chat dort car <em>il</em> est fatigué », la représentation de « il » va puiser principalement dans celle de « chat » : la coréférence est résolue en une seule couche.</p>
+
+<figure>{{fig:attnmap}}<figcaption><b>Figure 11.2</b> — Matrice d'auto-attention (valeurs illustratives). La ligne i donne la répartition de l'attention du token i sur tous les tokens.</figcaption></figure>
+
+<table>
+<tr><th>Propriété</th><th>RNN</th><th>Auto-attention</th></tr>
+<tr><td>Chemin entre deux positions distantes de n</td><td>$O(n)$ étapes : information diluée</td><td>$O(1)$ : connexion directe</td></tr>
+<tr><td>Parallélisation sur la séquence</td><td>Impossible (séquentiel)</td><td>Totale (produits matriciels sur GPU)</td></tr>
+<tr><td>Coût par couche</td><td>$O(n\,d^2)$</td><td>$O(n^2\,d)$ : quadratique en longueur</td></tr>
+<tr><td>Notion d'ordre</td><td>Intrinsèque</td><td>Absente : il faut l'ajouter (11.5)</td></tr>
+</table>
+
+<!-- ===================================================== -->
+<h2 id="s11-3"><span class="n">11.3</span> Query, key et value</h2>
+
+<p>Chaque token joue trois rôles, obtenus par trois projections linéaires apprises de son embedding $x_i\in\R^{d}$ :</p>
+<ul>
+<li><strong>Query</strong> (requête) $q_i = x_iW^Q$ : « qu'est-ce que je cherche ? »</li>
+<li><strong>Key</strong> (clé) $k_j = x_jW^K$ : « qu'est-ce que je contiens, comment me trouver ? »</li>
+<li><strong>Value</strong> (valeur) $v_j = x_jW^V$ : « quelle information je transmets si l'on me sélectionne ? »</li>
+</ul>
+<p>Séparer ces rôles donne beaucoup de souplesse : deux tokens peuvent être très pertinents l'un pour l'autre (fort $q_i\cdot k_j$) sans être similaires, et l'information transmise ($v_j$) peut différer de celle qui sert à la correspondance ($k_j$).</p>
+
+<div class="box math"><span class="t">Attention par produit scalaire normalisé (scaled dot-product attention)</span>
+<p>Pour une séquence $X\in\R^{n\times d}$ : $\;Q = XW^Q,\; K = XW^K \in\R^{n\times d_k},\; V = XW^V\in\R^{n\times d_v}$.</p>
+$$\boxed{\;\operatorname{Attention}(Q,K,V) = \softmax\!\left(\frac{QK^{\top}}{\sqrt{d_k}} + M\right)V\;}$$
+<p>$QK^\top\in\R^{n\times n}$ contient tous les scores $q_i\cdot k_j$ ; le softmax s'applique <strong>ligne par ligne</strong> ; $M$ est un masque optionnel ($0$ ou $-\infty$).</p>
+</div>
+
+<p><strong>Pourquoi diviser par $\sqrt{d_k}$ ?</strong> Si les composantes de $q$ et $k$ sont indépendantes, de moyenne 0 et de variance 1, alors $q\cdot k = \sum_{l=1}^{d_k} q_l k_l$ a une variance égale à $d_k$. Pour $d_k=64$, les scores ont un écart-type de 8 : le softmax sature (un poids proche de 1, les autres proches de 0) et ses gradients s'annulent. La division ramène la variance à 1.</p>
+
+<p><strong>Masques</strong> : le <em>masque de remplissage</em> met à $-\infty$ les scores vers les tokens <code>[PAD]</code> ; le <em>masque causal</em> met à $-\infty$ les scores vers les positions futures ($j&gt;i$), ce qui donne un poids nul après le softmax ($e^{-\infty}=0$). Il est indispensable pour la génération de texte (11.7).</p>
+
+<div class="box key"><span class="t">Exemple chiffré : 3 tokens, dimension 2</span>
+<p>Clés $k_1=(1,0)$, $k_2=(0,1)$, $k_3=(1,1)$ ; valeurs $v_1=(1,0)$, $v_2=(0,2)$, $v_3=(1,1)$ ; requête du token 3 : $q_3=(1,1)$.</p>
+$$s = \tfrac{1}{\sqrt2}\,(q_3\cdot k_1,\ q_3\cdot k_2,\ q_3\cdot k_3) = (0{,}71;\ 0{,}71;\ 1{,}41) \;\xrightarrow{\ \softmax\ }\; \alpha = (0{,}25;\ 0{,}25;\ 0{,}50)$$
+$$z_3 = 0{,}25\,(1,0) + 0{,}25\,(0,2) + 0{,}50\,(1,1) = (0{,}75;\ 1{,}00)$$
+<p>Le token 3 s'intéresse surtout à lui-même (clé la plus alignée), mais intègre aussi l'information des deux autres.</p>
+</div>
+
+<pre class="py">
+import math, torch
+import torch.nn.functional as F
+
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    # Q, K : (N, n, d_k)   V : (N, n, d_v)
+    scores = Q @ K.transpose(-2, -1) / math.sqrt(Q.size(-1))      # (N, n, n)
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, float("-inf"))      # positions interdites
+    weights = scores.softmax(dim=-1)                               # chaque ligne somme à 1
+    return weights @ V, weights                                    # (N, n, d_v)
+
+n = 5
+causal = torch.tril(torch.ones(n, n))                              # masque causal triangulaire inférieur
+# En pratique : F.scaled_dot_product_attention(Q, K, V, is_causal=True)  (implémentation optimisée)
+</pre>
+
+<!-- ===================================================== -->
+<h2 id="s11-4"><span class="n">11.4</span> Attention à plusieurs têtes</h2>
+
+<p>Une seule attention produit une seule distribution de poids par token : elle ne peut capturer qu'un type de relation à la fois. L'<strong>attention multi-têtes</strong> exécute $h$ attentions en parallèle, chacune avec ses propres projections, dans des sous-espaces de dimension réduite $d_k = d/h$. Chaque tête peut se spécialiser : relations syntaxiques (sujet-verbe), coréférence, position voisine, ponctuation…</p>
+
+<div class="box math"><span class="t">Formules</span>
+$$\text{head}_i = \operatorname{Attention}\big(XW_i^Q,\; XW_i^K,\; XW_i^V\big), \qquad W_i^Q, W_i^K, W_i^V \in \R^{d\times d_k}$$
+$$\operatorname{MultiHead}(X) = \operatorname{Concat}(\text{head}_1,\dots,\text{head}_h)\,W^O, \qquad W^O\in\R^{h d_k\times d}$$
+<p>Avec $d_k=d/h$, le coût total est le même qu'une seule tête de dimension $d$. Paramètres : $4d^2$ (plus les biais). BERT-base : $d=768$, $h=12$, $d_k=64$.</p>
+</div>
+
+<figure>{{fig:sdpa}}<figcaption><b>Figure 11.3</b> — À gauche : calcul d'une tête d'attention. À droite : h têtes en parallèle, concaténées puis projetées par W<sup>O</sup>.</figcaption></figure>
+
+<pre class="py">
+mha = nn.MultiheadAttention(embed_dim=512, num_heads=8, dropout=0.1, batch_first=True)
+x = torch.randn(4, 20, 512)                                     # (N, n, d)
+out, attn = mha(x, x, x, key_padding_mask=pad_mask)             # auto-attention : Q = K = V = x
+print(out.shape, attn.shape)                                    # (4, 20, 512)  (4, 20, 20) moyenne des têtes
+</pre>
+
+<!-- ===================================================== -->
+<h2 id="s11-5"><span class="n">11.5</span> Information de position</h2>
+
+<p>L'auto-attention est <strong>équivariante par permutation</strong> : si l'on mélange les tokens d'entrée, les sorties sont mélangées de la même façon, sans autre changement. Sans information supplémentaire, « le chien mord l'homme » et « l'homme mord le chien » seraient indiscernables. On injecte donc la <strong>position</strong> de chaque token.</p>
+
+<h3>Encodage sinusoïdal (Transformer original)</h3>
+<div class="box math"><span class="t">Formule</span>
+$$PE_{(pos,\,2i)} = \sin\!\left(\frac{pos}{10000^{2i/d}}\right) \qquad PE_{(pos,\,2i+1)} = \cos\!\left(\frac{pos}{10000^{2i/d}}\right)$$
+<p>Le vecteur de position est <strong>ajouté</strong> à l'embedding : $x_{pos} = e_{token} + PE_{pos}$. Chaque paire de dimensions est une sinusoïde de fréquence différente (longueurs d'onde de $2\pi$ à $10000\cdot2\pi$) : un « compteur » à plusieurs échelles. Pour tout décalage $k$, $PE_{pos+k}$ est une <strong>fonction linéaire</strong> (une rotation) de $PE_{pos}$, ce qui facilite l'apprentissage des positions relatives. Aucun paramètre appris.</p>
+</div>
+
+<figure>{{fig:pe}}<figcaption><b>Figure 11.4</b> — Encodage positionnel sinusoïdal : chaque ligne est le vecteur ajouté à la position pos.</figcaption></figure>
+
+<h3>Autres approches</h3>
+<ul>
+<li><strong>Positions apprises</strong> (BERT, GPT-2) : une seconde table d'embedding $P\in\R^{L_{max}\times d}$. Simple, mais impossible d'aller au-delà de $L_{max}$ (512 pour BERT).</li>
+<li><strong>RoPE</strong> (<em>Rotary Position Embedding</em> ; Llama, Mistral, Qwen) : on fait <strong>tourner</strong> chaque paire de composantes de $q$ et $k$ d'un angle proportionnel à la position, $\theta_{m,i}=m\cdot10000^{-2i/d}$. Le produit scalaire $\langle R_m q,\,R_n k\rangle$ ne dépend alors que de la <strong>distance relative</strong> $m-n$. C'est la méthode dominante des LLM actuels.</li>
+<li><strong>ALiBi</strong> : pas d'encodage ; on ajoute aux scores un biais négatif proportionnel à la distance, $-m_h\,|i-j|$, ce qui favorise l'extrapolation à des séquences plus longues.</li>
+</ul>
+
+<!-- ===================================================== -->
+<h2 id="s11-6"><span class="n">11.6</span> Architecture générale des Transformers</h2>
+
+<p>Un Transformer empile $N$ <strong>blocs identiques</strong> (6 dans l'article original, 12 pour BERT-base, 32 à 128 pour les LLM). Chaque bloc combine deux sous-couches, chacune entourée d'une <strong>connexion résiduelle</strong> et d'une <strong>normalisation de couche</strong> :</p>
+<ol>
+<li><strong>Attention multi-têtes</strong> : <em>mélange l'information entre positions</em> (communication entre tokens).</li>
+<li><strong>Réseau feed-forward position par position</strong> (FFN) : un MLP à deux couches appliqué <em>indépendamment</em> à chaque token (traitement local, « mémoire » des connaissances).</li>
+</ol>
+
+<div class="box math"><span class="t">Bloc Transformer (variante Pre-LN, standard actuel)</span>
+$$\begin{aligned}
+X' &= X + \operatorname{MultiHead}\big(\operatorname{LN}(X)\big)\\
+X'' &= X' + \operatorname{FFN}\big(\operatorname{LN}(X')\big), \qquad \operatorname{FFN}(x) = W_2\,\operatorname{GELU}(W_1x + b_1) + b_2
+\end{aligned}$$
+<p>$W_1\in\R^{d_{ff}\times d}$ avec habituellement $d_{ff}=4d$. Normalisation de couche (par token, sur les $d$ composantes) :</p>
+$$\operatorname{LN}(x) = \gamma\odot\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}}+\beta, \qquad \mu = \frac1d\sum_{l} x_l,\quad \sigma^2 = \frac1d\sum_{l}(x_l-\mu)^2$$
+<p class="small">L'article original place la normalisation après l'addition (Post-LN : $\operatorname{LN}(X+\operatorname{Sublayer}(X))$) ; Pre-LN est plus stable pour les réseaux profonds.</p>
+</div>
+
+<figure>{{fig:transformer}}<figcaption><b>Figure 11.5</b> — Architecture encodeur-décodeur du Transformer original (Post-LN). Les flèches orange sont les connexions résiduelles.</figcaption></figure>
+
+<h3>Rôle de chaque composant</h3>
+<ul>
+<li><strong>Connexions résiduelles</strong> : comme dans ResNet (9.4), elles assurent la circulation du gradient dans des piles de dizaines de blocs ; on peut voir le réseau comme un « flux résiduel » que chaque sous-couche lit et enrichit.</li>
+<li><strong>LayerNorm</strong> : stabilise l'échelle des activations, indépendamment de la taille du lot (contrairement à BatchNorm), ce qui convient aux séquences de longueur variable. Variante RMSNorm dans les LLM récents.</li>
+<li><strong>Dropout</strong> sur les poids d'attention et les sorties des sous-couches ; <strong>tête de sortie</strong> : couche linéaire $d\to|V|$ + softmax (souvent liée à la matrice d'embedding $E^\top$).</li>
+</ul>
+
+<div class="box key"><span class="t">Ordre de grandeur des paramètres</span>
+<p>Par bloc : attention $4d^2$ + FFN $2\cdot d\cdot 4d = 8d^2$ ≈ $12d^2$. BERT-base : $12\times12\times768^2\approx 85$ M + embeddings $\approx 24$ M ≈ <strong>110 M</strong>. Le coût en mémoire de l'attention croît en $O(n^2)$ avec la longueur du contexte, d'où les optimisations comme <strong>FlashAttention</strong> (calcul par tuiles, sans stocker la matrice $n\times n$).</p>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s11-7"><span class="n">11.7</span> Encodeurs et décodeurs</h2>
+
+<p>Le Transformer original est un <strong>encodeur-décodeur</strong> conçu pour la traduction. Ses deux moitiés ont donné naissance à trois familles de modèles, qui se distinguent par le <strong>masque d'attention</strong> et l'<strong>objectif de préentraînement</strong>.</p>
+
+<figure>{{fig:masks}}<figcaption><b>Figure 11.6</b> — Masques d'attention des trois familles (6 tokens).</figcaption></figure>
+
+<h3>Encodeur seul : comprendre (BERT, RoBERTa, CamemBERT, DeBERTa)</h3>
+<p>Attention <strong>bidirectionnelle</strong> : chaque token voit toute la phrase. Préentraînement par <strong>modèle de langue masqué</strong> (MLM) : on masque 15 % des tokens et le modèle doit les retrouver à partir du contexte gauche <em>et</em> droit, $\mathcal{L}_{MLM} = -\sum_{i\in\mathcal{M}}\log p(x_i\mid x_{\setminus\mathcal{M}})$. Produit d'excellentes représentations contextuelles pour la classification, l'extraction d'entités nommées, la recherche sémantique (embeddings de phrases), les questions-réponses extractives. Ne génère pas de texte.</p>
+
+<h3>Décodeur seul : générer (GPT, Llama, Mistral, Claude)</h3>
+<p>Attention <strong>causale</strong> : le token $t$ ne voit que les tokens $\le t$. Préentraînement par <strong>prédiction du token suivant</strong> (modèle de langue autorégressif) :</p>
+$$p(x_1,\dots,x_T) = \prod_{t=1}^{T} p(x_t \mid x_{&lt;t}), \qquad \mathcal{L} = -\sum_{t=1}^{T}\log p_\theta(x_t\mid x_{&lt;t})$$
+<p>Grâce au masque, les $T$ prédictions d'une séquence sont entraînées <strong>en parallèle</strong>. En génération, on produit un token, on l'ajoute à l'entrée et on recommence ; le <strong>cache KV</strong> mémorise les clés et valeurs déjà calculées pour éviter de les recalculer. Stratégies de décodage :</p>
+<ul>
+<li><strong>Glouton</strong> (token le plus probable) ou <strong>beam search</strong> (garde les $B$ meilleures séquences partielles) : déterministes, adaptés à la traduction ;</li>
+<li><strong>Échantillonnage avec température</strong> $p_i \propto \exp(z_i/\tau)$ : $\tau&lt;1$ rend la génération plus conservatrice, $\tau&gt;1$ plus créative ;</li>
+<li><strong>top-$k$</strong> (échantillonner parmi les $k$ tokens les plus probables) et <strong>top-$p$</strong> / <em>nucleus</em> (plus petit ensemble de tokens dont la probabilité cumulée atteint $p$).</li>
+</ul>
+
+<h3>Encodeur-décodeur : transformer une séquence en une autre (T5, BART, mBART, Whisper)</h3>
+<p>L'encodeur lit la source avec une attention bidirectionnelle. Chaque bloc du décodeur ajoute une couche d'<strong>attention croisée</strong> : les <strong>requêtes</strong> viennent du décodeur, les <strong>clés et valeurs</strong> viennent de la sortie de l'encodeur, $\operatorname{Attention}(Q_{dec}, K_{enc}, V_{enc})$. Idéal pour la traduction, le résumé, la reconnaissance vocale (Whisper : audio → texte).</p>
+
+<table>
+<tr><th>Famille</th><th>Attention</th><th>Préentraînement</th><th>Exemples</th><th>Tâches typiques</th></tr>
+<tr><td>Encodeur seul</td><td>Bidirectionnelle</td><td>Tokens masqués (MLM)</td><td>BERT, RoBERTa, CamemBERT</td><td>Classification, NER, embeddings, recherche</td></tr>
+<tr><td>Décodeur seul</td><td>Causale</td><td>Token suivant</td><td>GPT, Llama, Mistral</td><td>Génération, chat, code, raisonnement</td></tr>
+<tr><td>Encodeur-décodeur</td><td>Bidir. + causale + croisée</td><td>Débruitage de séquence</td><td>T5, BART, Whisper</td><td>Traduction, résumé, parole → texte</td></tr>
+</table>
+
+<div class="box key"><span class="t">Au-delà du texte</span>
+<p>Le même bloc s'applique à toute donnée découpée en tokens : <strong>ViT</strong> (patchs d'image $16\times16$ projetés linéairement), audio (trames de spectrogramme), séries temporelles (PatchTST), multimodal (CLIP aligne images et textes). Les Transformers sont aujourd'hui l'architecture universelle du deep learning.</p>
+</div>
+
+<!-- ===================================================== -->
+<h2 id="s11-8"><span class="n">11.8</span> Utilisation et adaptation de modèles préentraînés avec Hugging Face</h2>
+
+<p>Préentraîner un Transformer coûte de quelques milliers à plusieurs millions d'euros de calcul. L'écosystème <strong>Hugging Face</strong> donne accès à des centaines de milliers de modèles préentraînés et standardise leur utilisation.</p>
+
+<table>
+<tr><th>Bibliothèque</th><th>Rôle</th></tr>
+<tr><td>Hub (huggingface.co)</td><td>Hébergement de modèles, jeux de données et démos, avec <em>model cards</em> (usage, données, limites, licence).</td></tr>
+<tr><td><code>transformers</code></td><td>Architectures, tokeniseurs, <code>pipeline</code>, classes <code>Auto*</code>, <code>Trainer</code>.</td></tr>
+<tr><td><code>datasets</code></td><td>Chargement et prétraitement efficace (mémoire mappée, <code>map</code> par lots).</td></tr>
+<tr><td><code>tokenizers</code></td><td>Tokeniseurs rapides (Rust).</td></tr>
+<tr><td><code>peft</code></td><td>Fine-tuning efficace en paramètres (LoRA, adapters, prompt tuning).</td></tr>
+<tr><td><code>evaluate</code>, <code>accelerate</code></td><td>Métriques ; entraînement multi-GPU et précision mixte.</td></tr>
+</table>
+
+<h3>1. Utilisation directe : <code>pipeline</code></h3>
+<pre class="py">
+from transformers import pipeline
+
+clf = pipeline("text-classification", model="cmarkea/distilcamembert-base-sentiment")
+print(clf("Ce cours sur les Transformers est vraiment clair !"))
+# [{'label': '5 stars', 'score': 0.8...}]
+
+gen = pipeline("text-generation", model="gpt2")
+ner = pipeline("token-classification", model="Jean-Baptiste/camembert-ner", aggregation_strategy="simple")
+</pre>
+<p>Le pipeline enchaîne tokenisation → modèle → post-traitement (softmax, étiquettes). Pour plus de contrôle, on utilise les classes <code>AutoTokenizer</code> et <code>AutoModel*</code> : <code>AutoModel</code> donne les états cachés (embeddings contextuels), <code>AutoModelForSequenceClassification</code> ajoute une tête de classification, <code>AutoModelForCausalLM</code> une tête de génération.</p>
+
+<h3>2. Stratégies d'adaptation</h3>
+<table>
+<tr><th>Stratégie</th><th>Principe</th><th>Quand</th></tr>
+<tr><td>Zero-shot / prompting</td><td>Aucun entraînement : on décrit la tâche (LLM) ou on utilise un modèle NLI zero-shot.</td><td>Prototype, pas de données étiquetées.</td></tr>
+<tr><td>Extraction de caractéristiques</td><td>Modèle gelé ; embedding du token [CLS] ou moyenne des tokens → classifieur simple.</td><td>Peu de données, peu de calcul.</td></tr>
+<tr><td>Fine-tuning complet</td><td>Tous les poids sont mis à jour, lr ≈ $2\cdot10^{-5}$, 2 à 5 époques.</td><td>Quelques milliers d'exemples, modèle &lt; 1 Md de paramètres.</td></tr>
+<tr><td>PEFT (LoRA, QLoRA)</td><td>Modèle gelé + petites matrices entraînables (≈ 0,1–1 % des paramètres).</td><td>Grands modèles, mémoire GPU limitée.</td></tr>
+</table>
+
+<h3>3. Fine-tuning d'un encodeur pour la classification</h3>
+<pre class="py">
+from datasets import load_dataset
+from transformers import (AutoTokenizer, AutoModelForSequenceClassification,
+                          TrainingArguments, Trainer, DataCollatorWithPadding)
+import numpy as np, evaluate
+
+ckpt = "almanach/camembert-base"
+ds = load_dataset("csv", data_files={"train": "train.csv", "validation": "val.csv"})  # colonnes text, label
+tok = AutoTokenizer.from_pretrained(ckpt)
+ds = ds.map(lambda b: tok(b["text"], truncation=True, max_length=256), batched=True)
+
+model = AutoModelForSequenceClassification.from_pretrained(ckpt, num_labels=3)  # nouvelle tête aléatoire
+f1 = evaluate.load("f1")
+def compute_metrics(p):
+    return f1.compute(predictions=np.argmax(p.predictions, -1), references=p.label_ids, average="macro")
+
+args = TrainingArguments("out", learning_rate=2e-5, per_device_train_batch_size=16,
+                         num_train_epochs=3, weight_decay=0.01, warmup_ratio=0.1,
+                         eval_strategy="epoch", save_strategy="epoch",
+                         load_best_model_at_end=True, metric_for_best_model="f1", fp16=True)
+trainer = Trainer(model=model, args=args, train_dataset=ds["train"], eval_dataset=ds["validation"],
+                  data_collator=DataCollatorWithPadding(tok), compute_metrics=compute_metrics)
+trainer.train()
+trainer.save_model("mon-modele"); tok.save_pretrained("mon-modele")
+</pre>
+
+<h3>4. LoRA : adaptation à faible rang</h3>
+<p>Hypothèse (Hu et al., 2021) : la mise à jour nécessaire pour adapter un modèle a un <strong>rang intrinsèque faible</strong>. Au lieu d'apprendre $\Delta W\in\R^{d\times d}$, on apprend deux petites matrices :</p>
+<div class="box math"><span class="t">Formule LoRA</span>
+$$h = W_0\,x + \frac{\alpha}{r}\,B A\,x, \qquad B\in\R^{d\times r},\; A\in\R^{r\times d},\; r\ll d$$
+<p>$W_0$ est gelé ; $B$ est initialisé à zéro, donc le modèle de départ est inchangé. Paramètres entraînables : $2dr$ au lieu de $d^2$ ; pour $d=4096$ et $r=8$ : $65\,536$ contre $16{,}8$ M, soit <strong>0,4 %</strong>. Après l'entraînement, on peut fusionner $W = W_0 + \frac{\alpha}{r}BA$ : aucun surcoût à l'inférence. <strong>QLoRA</strong> combine LoRA avec un modèle de base quantifié en 4 bits.</p>
+</div>
+<figure>{{fig:lora}}<figcaption><b>Figure 11.7</b> — LoRA : une dérivation de faible rang (B·A) est ajoutée à la matrice gelée W<sub>0</sub>.</figcaption></figure>
+
+<pre class="py">
+from peft import LoraConfig, get_peft_model
+
+config = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.1,
+                    target_modules=["query", "value"],      # projections W^Q et W^V de l'attention
+                    task_type="SEQ_CLS")
+model = get_peft_model(model, config)
+model.print_trainable_parameters()   # trainable params : ~0,9 M || all params : ~111 M (tête comprise)
+# -> entraînement avec le même Trainer que ci-dessus (lr plus élevé possible : 1e-4 à 5e-4)
+</pre>
+
+<div class="box warn"><span class="t">Bonnes pratiques</span>
+<ul>
+<li>Utiliser <strong>le tokeniseur du même checkpoint</strong> que le modèle, et contrôler <code>max_length</code> / <code>truncation</code> (limite de contexte du modèle).</li>
+<li>Choisir un modèle adapté à la <strong>langue</strong> et au domaine (CamemBERT, FlauBERT pour le français ; modèles multilingues sinon).</li>
+<li>Lire la <em>model card</em> : données d'entraînement, biais connus, <strong>licence</strong> (usage commercial ou non).</li>
+<li>Taux d'apprentissage faible avec <em>warmup</em> ; évaluer sur un jeu de validation et comparer à une référence simple (TF-IDF + régression logistique).</li>
+<li>Fixer les graines (<code>transformers.set_seed</code>) et versionner modèle, tokeniseur et données pour la reproductibilité.</li>
+</ul>
+</div>
+
+<div class="box recap"><span class="t">À retenir — Partie 11</span>
+<ul>
+<li>Le texte est découpé en sous-mots (BPE, WordPiece, Unigram), convertis en identifiants puis en embeddings appris $E\in\R^{|V|\times d}$.</li>
+<li>L'attention calcule une moyenne pondérée des valeurs, avec des poids donnés par la similarité requête/clé ; en auto-attention, Q, K et V viennent de la même séquence.</li>
+<li>$\operatorname{Attention}(Q,K,V)=\softmax(QK^\top/\sqrt{d_k})V$ ; la division par $\sqrt{d_k}$ évite la saturation du softmax ; les masques gèrent padding et causalité.</li>
+<li>Plusieurs têtes captent plusieurs types de relations ; l'information de position (sinusoïdale, apprise, RoPE) est indispensable.</li>
+<li>Bloc = attention + FFN, chacun avec résiduelle et LayerNorm ; ≈ $12d^2$ paramètres par bloc.</li>
+<li>Encodeur (BERT) pour comprendre, décodeur (GPT) pour générer, encodeur-décodeur (T5) pour transformer.</li>
+<li>Hugging Face : <code>pipeline</code> pour utiliser, <code>Trainer</code> pour fine-tuner, <code>peft</code>/LoRA pour adapter les grands modèles à moindre coût.</li>
+</ul>
+</div>
+</section>
